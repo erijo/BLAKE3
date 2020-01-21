@@ -1,7 +1,6 @@
 NAME=blake3
 CC=gcc
 CFLAGS=-O3 -Wall -Wextra -std=c11 -pedantic
-BLAKE3_NO_NEON ?= 1
 TARGETS=
 EXTRAFLAGS=-DBLAKE3_TESTING
 
@@ -23,9 +22,8 @@ else
 TARGETS += blake3_avx512.o
 endif
 
-ifdef BLAKE3_NO_NEON
-EXTRAFLAGS += -DBLAKE3_NO_NEON
-else
+ifdef BLAKE3_USE_NEON
+EXTRAFLAGS += -DBLAKE3_USE_NEON
 TARGETS += blake3_neon.o
 endif
 

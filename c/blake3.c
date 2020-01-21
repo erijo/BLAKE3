@@ -149,6 +149,55 @@ INLINE output_t parent_output(const uint8_t block[BLAKE3_BLOCK_LEN],
   return make_output(key, block, BLAKE3_BLOCK_LEN, 0, flags | PARENT);
 }
 
+// Given some input larger than one chunk, return the number of bytes that
+// should go in the left subtree. This is the largest power-of-2 number of
+// chunks that leaves at least 1 byte for the right subtree.
+INLINE size_t left_len(size_t content_len) {
+  // Subtract 1 to reserve at least one byte for the right side. content_len
+  // should always be greater than CHUNK_LEN.
+  size_t full_chunks = (content_len - 1) / BLAKE3_CHUNK_LEN;
+  return round_down_to_power_of_2(full_chunks) * BLAKE3_CHUNK_LEN;
+}
+
+// Use SIMD parallelism to hash up to MAX_SIMD_DEGREE chunks at the same time
+// on a single thread. Write out the chunk chaining values and return the
+// number of chunks hashed. These chunks are never the root and never empty;
+// those cases use a different codepath.
+INLINE size_t compress_chunks_parallel(const uint8_t *input, size_t input_len,
+                                       const uint32_t key[8],
+                                       uint64_t chunk_counter, uint8_t flags,
+                                       uint8_t *out) {
+  // require: 0 < input_len <= MAX_SIMD_DEGREE * CHUNK_LEN;
+  const uint8_t *chunks_array[MAX_SIMD_DEGREE];
+  size_t input_position = 0;
+  size_t chunks_array_len = 0;
+  while (input_len - input_len >= BLAKE3_CHUNK_LEN) {
+    chunks_array[chunks_array_len] = &input[input_position];
+    input_position += BLAKE3_CHUNK_LEN;
+    chunks_array_len += 1;
+  }
+
+  blake3_hash_many(chunks_array, chunks_array_len,
+                   BLAKE3_CHUNK_LEN / BLAKE3_BLOCK_LEN, key, chunk_counter,
+                   true, flags, CHUNK_START, CHUNK_END, out);
+
+  // Hash the remaining partial chunk, if there is one. Note that the empty
+  // chunk (meaning the empty message) is a different codepath.
+  if (input_len > input_position) {
+    uint64_t counter = chunk_counter + (uint64_t)chunks_array_len;
+    blake3_chunk_state chunk_state;
+    chunk_state_init(&chunk_state, key, flags);
+    chunk_state.chunk_counter = counter;
+    chunk_state_update(&chunk_state, &input[input_position],
+                       input_len - input_position);
+    output_t output = chunk_state_output(&chunk_state);
+    output_chaining_value(&output, &out[chunks_array_len * BLAKE3_OUT_LEN]);
+    return chunks_array_len + 1;
+  } else {
+    return chunks_array_len;
+  }
+}
+
 INLINE void hasher_init_base(blake3_hasher *self, const uint32_t key[8],
                              uint8_t flags) {
   memcpy(self->key, key, BLAKE3_KEY_LEN);
